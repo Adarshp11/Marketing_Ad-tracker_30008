@@ -1,0 +1,186 @@
+# Ad_tracker.py
+import streamlit as st
+import pandas as pd
+from database import (
+    init_db,
+    create_campaign,
+    read_campaigns,
+    update_campaign,
+    delete_campaign,
+    get_aggregates
+)
+from datetime import datetime
+from typing import Optional
+
+try:
+    # Initialize database
+    init_db()
+
+    st.set_page_config(layout="wide")
+    st.title("📊 Digital Ad Campaign Tracker")
+
+    # Helper function for data validation
+    def validate_campaign_data(data: dict) -> Optional[str]:
+        """Validates campaign data and returns an error message if invalid."""
+        if not data['campaign_name'].strip():
+            return "Campaign name cannot be empty."
+        if data['cost'] < 0 or data['clicks'] < 0 or data['conversions'] < 0:
+            return "Cost, clicks, and conversions must be non-negative."
+        if data['conversions'] > data['clicks']:
+            return "Conversions cannot exceed clicks."
+        return None
+
+    # Sidebar for filters and CRUD
+    with st.sidebar:
+        st.header("Filters & Actions")
+        
+        # Platform filter
+        platforms = ['All', 'Google Ads', 'Facebook Ads', 'Twitter Ads']
+        selected_platform = st.selectbox(
+            "Platform Filter",
+            options=platforms,
+            index=0
+        )
+
+        # Sorting control
+        sort_options = {
+            'Cost': 'cost',
+            'Clicks': 'clicks',
+            'Conversions': 'conversions'
+        }
+        selected_sort = st.radio(
+            "Sort by",
+            options=list(sort_options.keys()),
+            index=0
+        )
+        sort_column = sort_options[selected_sort]
+        
+        # "Add Campaign" button
+        st.markdown("---")
+        if st.button("➕ Add Campaign"):
+            st.session_state['show_add_form'] = True
+
+    # Main content layout
+    col1, col2 = st.columns([3, 2])
+
+    # KPI Metrics Section
+    with col1:
+        st.header("Business Insights")
+        aggregates = get_aggregates(selected_platform)
+        
+        if aggregates:
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5, kpi_col6 = st.columns(6)
+            
+            with kpi_col1:
+                st.metric("Total Campaigns", aggregates.get('count', 0))
+            with kpi_col2:
+                st.metric("Total Cost", f"${aggregates.get('total_cost', 0):.2f}")
+            with kpi_col3:
+                st.metric("Avg Clicks", f"{aggregates.get('avg_clicks', 0):.2f}")
+            with kpi_col4:
+                st.metric("Min Cost", f"${aggregates.get('min_cost', 0):.2f}")
+            with kpi_col5:
+                st.metric("Max Clicks", f"{aggregates.get('max_clicks', 0)}")
+            
+            st.markdown("---")
+            st.subheader("Derived KPIs")
+            kpi_kpi_col1, kpi_kpi_col2, kpi_kpi_col3 = st.columns(3)
+            with kpi_kpi_col1:
+                st.metric("CPC (Cost per Click)", f"${aggregates.get('cpc', 0):.2f}")
+            with kpi_kpi_col2:
+                st.metric("CVR (Conversion Rate)", f"{aggregates.get('cvr', 0):.2%}")
+            with kpi_kpi_col3:
+                st.metric("CPA (Cost per Acquisition)", f"${aggregates.get('cpa', 0):.2f}")
+
+    # Main Data Table Section
+    st.markdown("---")
+    st.subheader("Campaign Data")
+    campaigns_df = read_campaigns(platform=selected_platform, sort_by=sort_column, sort_order='DESC')
+    st.dataframe(campaigns_df, use_container_width=True)
+
+    # CRUD Forms
+    if 'show_add_form' not in st.session_state:
+        st.session_state['show_add_form'] = False
+
+    if st.session_state.get('show_add_form'):
+        with st.expander("➕ Add New Campaign", expanded=True):
+            with st.form("add_campaign_form"):
+                st.markdown("---")
+                campaign_id = st.text_input("Campaign ID", help="Must be unique.")
+                campaign_name = st.text_input("Campaign Name")
+                platform_input = st.selectbox("Platform", options=platforms[1:])
+                start_date = st.date_input("Start Date", value=datetime.today())
+                cost = st.number_input("Cost", min_value=0.0, format="%.2f")
+                clicks = st.number_input("Clicks", min_value=0, step=1)
+                conversions = st.number_input("Conversions", min_value=0, step=1)
+
+                submitted = st.form_submit_button("Submit")
+                if submitted:
+                    new_data = {
+                        'campaign_id': campaign_id,
+                        'campaign_name': campaign_name,
+                        'platform': platform_input,
+                        'start_date': start_date,
+                        'cost': cost,
+                        'clicks': clicks,
+                        'conversions': conversions
+                    }
+                    error = validate_campaign_data(new_data)
+                    if not error:
+                        result = create_campaign(new_data)
+                        st.info(result)
+                        st.session_state['show_add_form'] = False
+                        st.experimental_rerun()
+                    else:
+                        st.error(error)
+
+    # Update and Delete Actions
+    if not campaigns_df.empty:
+        st.markdown("---")
+        st.subheader("Edit or Delete Campaigns")
+        selected_row = st.radio("Select a campaign to edit or delete:", options=campaigns_df['campaign_id'].tolist(), format_func=lambda x: campaigns_df[campaigns_df['campaign_id'] == x]['campaign_name'].iloc[0])
+
+        if selected_row:
+            with st.expander(f"✏️ Edit Campaign: {selected_row}", expanded=True):
+                campaign_to_edit = campaigns_df[campaigns_df['campaign_id'] == selected_row].iloc[0]
+                with st.form("edit_campaign_form"):
+                    st.markdown("---")
+                    campaign_name_edit = st.text_input("Campaign Name", value=campaign_to_edit['campaign_name'])
+                    platform_edit = st.selectbox("Platform", options=platforms[1:], index=platforms[1:].index(campaign_to_edit['platform']))
+                    start_date_edit = st.date_input("Start Date", value=campaign_to_edit['start_date'])
+                    cost_edit = st.number_input("Cost", min_value=0.0, value=float(campaign_to_edit['cost']), format="%.2f")
+                    clicks_edit = st.number_input("Clicks", min_value=0, step=1, value=int(campaign_to_edit['clicks']))
+                    conversions_edit = st.number_input("Conversions", min_value=0, step=1, value=int(campaign_to_edit['conversions']))
+
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        update_submitted = st.form_submit_button("Update")
+                    with col_del:
+                        delete_submitted = st.form_submit_button("Delete", help="Deletes the selected campaign permanently.")
+                    
+                    if update_submitted:
+                        updated_data = {
+                            'campaign_name': campaign_name_edit,
+                            'platform': platform_edit,
+                            'start_date': start_date_edit,
+                            'cost': cost_edit,
+                            'clicks': clicks_edit,
+                            'conversions': conversions_edit
+                        }
+                        error = validate_campaign_data(updated_data)
+                        if not error:
+                            result = update_campaign(selected_row, updated_data)
+                            st.info(result)
+                            st.experimental_rerun()
+                        else:
+                            st.error(error)
+                    
+                    if delete_submitted:
+                        if st.confirm(f"Are you sure you want to delete campaign '{selected_row}'?"):
+                            result = delete_campaign(selected_row)
+                            st.info(result)
+                            st.experimental_rerun()
+
+except Exception as e:
+    st.error(f"An unexpected error occurred: {e}")
+    st.write("Please check your database connection details and ensure the `database.py` file is correctly saved.")
