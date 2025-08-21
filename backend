@@ -1,0 +1,221 @@
+# database.py
+import psycopg2
+from psycopg2 import Error
+import pandas as pd
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+from typing import Optional, List, Dict, Tuple
+import datetime
+import uuid # For generating unique parts of the ID
+
+# Replace with your PostgreSQL credentials
+DB_HOST = "localhost"
+DB_NAME = "Ad_tracker"
+DB_USER = "postgres"
+DB_PASSWORD = "1155"
+DB_PORT = "5433"
+
+
+def get_connection():
+    """Establishes a connection to the PostgreSQL database with hard-coded credentials."""
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        return conn
+    except Error as e:
+        print(f"Error connecting to PostgreSQL: {e}")
+        return None
+
+def init_db():
+    """Creates the campaigns table if it does not exist."""
+    conn = get_connection()
+    if conn is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+                campaign_id VARCHAR(255) PRIMARY KEY,
+                campaign_name VARCHAR(255) NOT NULL,
+                platform VARCHAR(50),
+                start_date DATE,
+                cost DECIMAL(10, 2),
+                clicks INTEGER,
+                conversions INTEGER
+            );
+        """)
+        conn.commit()
+    conn.close()
+
+def seed_data():
+    """Inserts sample data into the campaigns table."""
+    conn = get_connection()
+    if conn is None:
+        return
+    with conn.cursor() as cur:
+        sample_data = [
+            ('campaign_001', 'Summer Sale Google', 'Google Ads', '2023-06-01', 500.50, 1000, 50),
+            ('campaign_002', 'Fall Collection Facebook', 'Facebook Ads', '2023-09-15', 750.00, 1500, 75),
+            ('campaign_003', 'Holiday Campaign Google', 'Google Ads', '2023-11-20', 1200.75, 2500, 120),
+            ('campaign_004', 'Winter Deals Twitter', 'Twitter Ads', '2024-01-10', 300.25, 800, 25)
+        ]
+        try:
+            cur.executemany("""
+                INSERT INTO campaigns (campaign_id, campaign_name, platform, start_date, cost, clicks, conversions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (campaign_id) DO NOTHING;
+            """, sample_data)
+            conn.commit()
+            print("Sample data seeded successfully.")
+        except Exception as e:
+            conn.rollback()
+            print(f"Error seeding data: {e}")
+    conn.close()
+
+def create_campaign(data: dict) -> str:
+    """Inserts a new campaign record."""
+    conn = get_connection()
+    if conn is None:
+        return "Database connection error."
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO campaigns (campaign_id, campaign_name, platform, start_date, cost, clicks, conversions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (data['campaign_id'], data['campaign_name'], data['platform'], data['start_date'],
+                  data['cost'], data['clicks'], data['conversions']))
+            conn.commit()
+        return "Campaign added successfully."
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return f"Error: Campaign ID '{data['campaign_id']}' already exists."
+    except Exception as e:
+        conn.rollback()
+        return f"Error adding campaign: {e}"
+    finally:
+        conn.close()
+
+def read_campaigns(platform: Optional[str] = None, sort_by: str = 'campaign_id', sort_order: str = 'DESC') -> pd.DataFrame:
+    """Reads campaign data with optional filters and sorting."""
+    conn = get_connection()
+    if conn is None:
+        return pd.DataFrame()
+
+    query = "SELECT * FROM campaigns"
+    params = []
+    
+    if platform and platform != 'All':
+        query += " WHERE platform = %s"
+        params.append(platform)
+
+    valid_sort_columns = {'cost', 'clicks', 'conversions', 'campaign_id'}
+    if sort_by in valid_sort_columns:
+        order = sql.SQL(sort_order.upper()) if sort_order.upper() in ('ASC', 'DESC') else sql.SQL('DESC')
+        query += f" ORDER BY {sort_by} {order}"
+    
+    try:
+        df = pd.read_sql(query, conn, params=params)
+        return df
+    except Exception as e:
+        print(f"Error reading campaigns: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def update_campaign(campaign_id: str, data: dict) -> str:
+    """Updates an existing campaign record."""
+    conn = get_connection()
+    if conn is None:
+        return "Database connection error."
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE campaigns
+                SET campaign_name = %s, platform = %s, start_date = %s, cost = %s, clicks = %s, conversions = %s
+                WHERE campaign_id = %s
+            """, (data['campaign_name'], data['platform'], data['start_date'], data['cost'],
+                  data['clicks'], data['conversions'], campaign_id))
+            conn.commit()
+            if cur.rowcount == 0:
+                return f"Error: Campaign ID '{campaign_id}' not found."
+        return "Campaign updated successfully."
+    except Exception as e:
+        conn.rollback()
+        return f"Error updating campaign: {e}"
+    finally:
+        conn.close()
+
+def delete_campaign(campaign_id: str) -> str:
+    """Deletes a campaign record."""
+    conn = get_connection()
+    if conn is None:
+        return "Database connection error."
+        
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM campaigns WHERE campaign_id = %s", (campaign_id,))
+            conn.commit()
+            if cur.rowcount == 0:
+                return f"Error: Campaign ID '{campaign_id}' not found."
+        return "Campaign deleted successfully."
+    except Exception as e:
+        conn.rollback()
+        return f"Error deleting campaign: {e}"
+    finally:
+        conn.close()
+
+def get_aggregates(platform: Optional[str] = None) -> dict:
+    """Computes and returns aggregate metrics and KPIs."""
+    conn = get_connection()
+    if conn is None:
+        return {}
+
+    query = sql.SQL("""
+        SELECT
+            COUNT(campaign_id) AS count,
+            SUM(cost) AS total_cost,
+            AVG(clicks) AS avg_clicks,
+            MIN(cost) AS min_cost,
+            MAX(clicks) AS max_clicks,
+            SUM(clicks) AS total_clicks,
+            SUM(conversions) AS total_conversions
+        FROM campaigns
+    """)
+    params = []
+
+    if platform and platform != 'All':
+        query += sql.SQL(" WHERE platform = %s")
+        params.append(platform)
+
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(query, params)
+            result = cur.fetchone()
+
+        if result:
+            aggregates = dict(result)
+            total_cost = aggregates.get('total_cost', 0)
+            total_clicks = aggregates.get('total_clicks', 0)
+            total_conversions = aggregates.get('total_conversions', 0)
+            
+            aggregates['cpc'] = total_cost / total_clicks if total_clicks > 0 else 0
+            aggregates['cvr'] = total_conversions / total_clicks if total_clicks > 0 else 0
+            aggregates['cpa'] = total_cost / total_conversions if total_conversions > 0 else 0
+            
+            return aggregates
+    except Exception as e:
+        print(f"Error getting aggregates: {e}")
+        return {}
+    finally:
+        conn.close()
+
+if __name__ == '__main__':
+    init_db()
+    seed_data()
